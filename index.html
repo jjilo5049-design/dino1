@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>픽셀 모자 런 (Pixel Hat Run)</title>
+    <!-- Tailwind CSS CDN 로드 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* 폰트 설정 및 기본 스타일 */
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f7f7f7; /* 약간의 오프화이트 배경 */
+        }
+        /* 게임 컨테이너 스타일 */
+        #game-container {
+            width: 100%;
+            max-width: 900px;
+            height: 250px; /* 게임 높이 고정 */
+            overflow: hidden; /* 공룡, 장애물이 밖으로 나가지 않게 함 */
+            position: relative;
+            background-color: #ffffff;
+            border-bottom: 3px solid #000000; /* 지면 라인 */
+        }
+        /* 공룡 스타일 - 배경색 제거, SVG로 채워짐 */
+        .dino {
+            position: absolute;
+            bottom: 0px; /* 지면 위 */
+            left: 50px;
+            width: 30px;
+            height: 40px;
+            /* background-color: #000000; -> SVG가 채우므로 제거 */
+            transition: width 0.05s ease-out, height 0.05s ease-out, bottom 0.05s ease-out; 
+            z-index: 10;
+        }
+        /* 장애물 스타일 - 일반 박스 */
+        .obstacle {
+            position: absolute;
+            right: -20px; /* 오른쪽 바깥에서 시작 */
+        }
+        /* 선인장 (Cactus) - SVG가 내부를 채움 */
+        .cactus {
+            bottom: 0px;
+            width: 20px;
+            height: 40px;
+        }
+        /* 새 (Bird) - 높은 위치, SVG가 내부를 채움 */
+        .bird {
+            /* bottom은 JS에서 동적으로 설정됩니다. */
+            width: 30px;
+            height: 20px;
+            /* background-color: #000000; -> SVG가 채우므로 제거 */
+        }
+        /* 게임 메시지 (시작/종료) 스타일 */
+        #game-message {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 1.5rem;
+            text-align: center;
+            line-height: 1.2;
+            font-weight: bold;
+            color: #000000;
+            cursor: pointer;
+            padding: 15px 30px;
+            border: 3px solid #000000;
+            background-color: #fff;
+            user-select: none;
+            z-index: 20;
+            border-radius: 8px;
+            box-shadow: 4px 4px 0 #000;
+        }
+    </style>
+</head>
+<body class="flex flex-col items-center justify-center min-h-screen p-4 bg-gray-100">
+
+    <h1 class="text-3xl font-mono mb-4 text-black">픽셀 모자 런</h1>
+
+    <div id="game-container" class="rounded-lg shadow-xl font-mono">
+        <!-- 공룡 요소 -->
+        <div id="dino" class="dino"></div>
+        
+        <!-- 게임 메시지 (시작 또는 게임 오버) -->
+        <div id="game-message"></div>
+    </div>
+
+    <div id="score-display" class="mt-4 text-xl font-mono text-black">
+        점수: 0
+    </div>
+
+    <script>
+        // 전역 변수 설정
+        const gameContainer = document.getElementById('game-container');
+        const dino = document.getElementById('dino');
+        const scoreDisplay = document.getElementById('score-display');
+        const gameMessage = document.getElementById('game-message');
+
+        const GAME_WIDTH = 900; // 최대 너비를 기준으로 충돌 처리 (반응형 대응)
+        const GROUND_LEVEL = 0; // CSS bottom: 0px 에 해당
+
+        // 공룡 크기 상수
+        const NORMAL_DINO_WIDTH = 30;
+        const NORMAL_DINO_HEIGHT = 40;
+        const DUCK_DINO_WIDTH = 45; // 앉을 때 더 넓게
+        const DUCK_DINO_HEIGHT = 20; // 앉을 때 더 낮게
+        const INITIAL_GAME_SPEED = 5; // 초기 게임 속도 상수
+        
+        // **[수정]** 선인장 그룹 생성 시 간격: 10에서 5로 줄여 조밀하게 조정
+        const CACTUS_SPACING = 5; 
+
+        // 게임 상태
+        let isGameOver = true;
+        let isGameStarted = false;
+        let isJumping = false;
+        let isDucking = false;
+        let score = 0;
+        let gameSpeed = INITIAL_GAME_SPEED; // 장애물 이동 속도 (픽셀/프레임) - 이 값이 점수에 따라 변경됩니다.
+
+        // 공룡 점프 관련 변수
+        let dinoY = GROUND_LEVEL; // 공룡의 Y 위치 (지면으로부터의 높이)
+        const JUMP_VELOCITY = 15; // 공룡의 점프 초기 속도 (상수, 변경되지 않음)
+        const GRAVITY = 0.8; // 공룡에게 적용되는 중력 (상수, 변경되지 않음)
+        let velocityY = 0; // 현재 수직 속도
+
+        // 장애물 생성 관련 변수
+        let lastObstacleTime = 0;
+        const MIN_OBSTACLE_INTERVAL = 1500; // 최소 생성 간격 (ms)
+        const MAX_OBSTACLE_INTERVAL = 3000; // 최대 생성 간격 (ms)
+
+        // 애니메이션 관련 변수
+        let animationFrameId;
+        let runFrame = 0;
+        let frameCounter = 0;
+        const RUNNING_ANIMATION_SPEED = 5; // 애니메이션 프레임 변경 속도 (프레임 단위)
+
+        /**
+         * 공룡 SVG 함수 (픽셀 아트 스타일)
+         * NORMAL_DINO_WIDTH와 NORMAL_DINO_HEIGHT를 기준으로 비율 계산
+         */
+        function getDinoRunFrame1(width, height) {
+            // 다리 하나가 올라간 달리기 자세
+            return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" fill="#000" xmlns="http://www.w3.org/2000/svg">
+                <!-- 꼬리 -->
+                <rect x="0" y="${height * 0.5}" width="${width * 0.3}" height="${height * 0.15}"/>
+                <!-- 몸통, 머리 -->
+                <rect x="${width * 0.15}" y="0" width="${width * 0.85}" height="${height * 0.6}"/>
+                <!-- 앞다리 -->
+                <rect x="${width * 0.3}" y="${height * 0.8}" width="${width * 0.1}" height="${height * 0.2}"/>
+                <!-- 뒷다리 (올라감) -->
+                <rect x="${width * 0.7}" y="${height * 0.8}" width="${width * 0.1}" height="${height * 0.2}"/>
+            </svg>`;
+        }
+
+        function getDinoRunFrame2(width, height) {
+            // 다리 두 개가 땅에 닿은 달리기 자세
+            return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" fill="#000" xmlns="http://www.w3.org/2000/svg">
+                <!-- 꼬리 -->
+                <rect x="0" y="${height * 0.5}" width="${width * 0.3}" height="${height * 0.15}"/>
+                <!-- 몸통, 머리 -->
+                <rect x="${width * 0.15}" y="0" width="${width * 0.85}" height="${height * 0.6}"/>
+                <!-- 앞다리 -->
+                <rect x="${width * 0.2}" y="${height * 0.8}" width="${width * 0.1}" height="${height * 0.2}"/>
+                <!-- 뒷다리 -->
+                <rect x="${width * 0.6}" y="${height * 0.8}" width="${width * 0.1}" height="${height * 0.2}"/>
+            </svg>`;
+        }
+
+        function getDinoIdleJumpSvg(width, height) {
+            // 점프, 앉기, 정지 시의 자세
+            return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" fill="#000" xmlns="http://www.w3.org/2000/svg">
+                <!-- 꼬리 -->
+                <rect x="0" y="${height * 0.5}" width="${width * 0.3}" height="${height * 0.15}"/>
+                <!-- 몸통, 머리 -->
+                <rect x="${width * 0.15}" y="0" width="${width * 0.85}" height="${height * 0.6}"/>
+                <!-- 다리 (정지 상태) -->
+                <rect x="${width * 0.3}" y="${height * 0.8}" width="${width * 0.15}" height="${height * 0.15}"/>
+                <rect x="${width * 0.65}" y="${height * 0.8}" width="${width * 0.15}" height="${height * 0.15}"/>
+            </svg>`;
+        }
+        
+        /**
+         * 선인장 SVG 생성 함수
+         */
+        function getCactusSvg(width, height) {
+            // 간단한 픽셀 아트 선인장 SVG
+            return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" fill="#000" xmlns="http://www.w3.org/2000/svg">
+                <!-- 메인 줄기 -->
+                <rect x="${width*0.4}" y="0" width="${width*0.2}" height="${height}"/>
+                <!-- 왼쪽 팔 -->
+                <rect x="0" y="${height*0.5}" width="${width*0.4}" height="${height*0.1}"/>
+                <rect x="0" y="${height*0.3}" width="${width*0.1}" height="${height*0.2}"/>
+                <!-- 오른쪽 팔 (좀 더 높게) -->
+                <rect x="${width*0.6}" y="${height*0.3}" width="${width*0.4}" height="${height*0.1}"/>
+                <rect x="${width*0.9}" y="${height*0.1}" width="${width*0.1}" height="${height*0.2}"/>
+            </svg>`;
+        }
+        
+        /**
+         * 새 SVG 생성 함수
+         */
+        function getBirdSvg(width, height) {
+            // 간단한 픽셀 아트 새 SVG (날개 편 모양)
+            return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" fill="#000" xmlns="http://www.w3.org/2000/svg">
+                <!-- 몸통 -->
+                <rect x="${width * 0.1}" y="${height * 0.3}" width="${width * 0.7}" height="${height * 0.4}"/>
+                <!-- 머리 -->
+                <rect x="${width * 0.6}" y="${height * 0.1}" width="${width * 0.3}" height="${height * 0.2}"/>
+                <!-- 날개 윗부분 (V자 형태) -->
+                <polygon points="0,${height * 0.5} ${width * 0.5},0 ${width},${height * 0.5}" fill="#000"/>
+            </svg>`;
+        }
+
+
+        /**
+         * 게임 초기 상태 설정 (시작 화면 표시)
+         */
+        function initGame() {
+            isGameOver = true;
+            isGameStarted = false;
+            score = 0;
+            gameSpeed = INITIAL_GAME_SPEED;
+            dinoY = GROUND_LEVEL;
+            velocityY = 0;
+            lastObstacleTime = 0;
+            
+            // 공룡 초기 상태 설정 (SVG 적용)
+            dino.style.width = `${NORMAL_DINO_WIDTH}px`;
+            dino.style.height = `${NORMAL_DINO_HEIGHT}px`;
+            dino.style.bottom = `${GROUND_LEVEL}px`;
+            dino.innerHTML = getDinoIdleJumpSvg(NORMAL_DINO_WIDTH, NORMAL_DINO_HEIGHT);
+            
+            scoreDisplay.textContent = '점수: 0';
+
+            // 시작 메시지 표시
+            gameMessage.innerHTML = 'DINO GAME<br>시작하려면 클릭하거나 Space를 누르세요';
+            gameMessage.style.display = 'block';
+
+            // 기존 장애물 제거
+            document.querySelectorAll('.obstacle').forEach(obs => obs.remove());
+
+            // 이벤트 리스너 설정
+            document.removeEventListener('keydown', handleJumpOrDuck);
+            document.removeEventListener('keyup', handleJumpOrDuck);
+            document.removeEventListener('click', handleJumpOrDuck);
+            
+            document.addEventListener('keydown', handleJumpOrDuck);
+            document.addEventListener('keyup', handleJumpOrDuck);
+            document.addEventListener('click', handleJumpOrDuck);
+
+            if (animationFrameId) {
+                cancelAnimationFrame(animationFrameId);
+            }
+        }
+
+        /**
+         * 게임 시작 (루프 실행)
+         */
+        function startGame() {
+            if (isGameStarted) return; 
+
+            isGameStarted = true;
+            isGameOver = false;
+            gameMessage.style.display = 'none';
+            
+            // 게임 루프 시작
+            animationFrameId = requestAnimationFrame(gameLoop);
+        }
+
+        /**
+         * 공룡 점프 또는 앉기(Ducking) 처리
+         */
+        function handleJumpOrDuck(event) {
+            // 게임이 시작되지 않았으면 점프/클릭이 게임 시작을 의미
+            if (!isGameStarted && (event.key === ' ' || event.type === 'click')) {
+                startGame();
+                return;
+            }
+
+            if (isGameOver) {
+                if (event.type === 'click' && event.target.id === 'game-message') {
+                    initGame();
+                }
+                return;
+            }
+
+            if (event.key === ' ' || event.type === 'click') {
+                // 점프 (스페이스바 또는 클릭)
+                if (!isJumping) {
+                    isJumping = true;
+                    velocityY = JUMP_VELOCITY;
+                    dino.innerHTML = getDinoIdleJumpSvg(NORMAL_DINO_WIDTH, NORMAL_DINO_HEIGHT); // 점프 시에는 정지 이미지
+                }
+            } else if (event.key === 'ArrowDown') {
+                event.preventDefault(); // 페이지 스크롤 방지
+                
+                if (event.type === 'keydown' && !isDucking) {
+                    // 앉기 시작: 크기 변경 및 SVG 업데이트
+                    isDucking = true;
+                    dino.style.width = `${DUCK_DINO_WIDTH}px`;
+                    dino.style.height = `${DUCK_DINO_HEIGHT}px`;
+                    dino.innerHTML = getDinoIdleJumpSvg(DUCK_DINO_WIDTH, DUCK_DINO_HEIGHT);
+                } else if (event.type === 'keyup' && isDucking) {
+                    // 앉기 해제: 크기 복원
+                    isDucking = false;
+                    dino.style.width = `${NORMAL_DINO_WIDTH}px`;
+                    dino.style.height = `${NORMAL_DINO_HEIGHT}px`;
+                    // SVG는 gameLoop에서 달리기 애니메이션으로 자동 전환
+                }
+            }
+        }
+
+        /**
+         * 공룡 위치 업데이트 (점프 로직)
+         */
+        function updateDino() {
+            if (isJumping) {
+                // 중력 적용
+                velocityY -= GRAVITY;
+                dinoY += velocityY;
+
+                // 지면 도달 확인
+                if (dinoY <= GROUND_LEVEL) {
+                    dinoY = GROUND_LEVEL;
+                    isJumping = false;
+                    velocityY = 0;
+                    // 앉아있지 않다면 정상 크기로 복원 (애니메이션은 gameLoop에서 처리)
+                    if (!isDucking) {
+                        dino.style.width = `${NORMAL_DINO_WIDTH}px`;
+                        dino.style.height = `${NORMAL_DINO_HEIGHT}px`;
+                    }
+                }
+                dino.style.bottom = `${dinoY}px`;
+            } 
+            
+            // 앉아있는 상태의 충돌 크기만 유지
+            if (isDucking && !isJumping) {
+                dino.style.width = `${DUCK_DINO_WIDTH}px`;
+                dino.style.height = `${DUCK_DINO_HEIGHT}px`;
+                dino.innerHTML = getDinoIdleJumpSvg(DUCK_DINO_WIDTH, DUCK_DINO_HEIGHT);
+            }
+        }
+
+        /**
+         * 장애물 생성
+         */
+        function createObstacle(currentTime) {
+            const timeElapsed = currentTime - lastObstacleTime;
+
+            if (isGameStarted && timeElapsed > MIN_OBSTACLE_INTERVAL && timeElapsed > Math.random() * (MAX_OBSTACLE_INTERVAL - MIN_OBSTACLE_INTERVAL) + MIN_OBSTACLE_INTERVAL) {
+                
+                // 1. 장애물 유형 결정: 선인장 그룹 vs 새
+                const isGroundObstacle = Math.random() < 0.8; // 80% 확률로 지면 장애물
+
+                if (isGroundObstacle) {
+                    // 2. 선인장 그룹 크기 결정 (1개, 2개, 또는 3개)
+                    let numCacti = 1;
+                    const rand = Math.random();
+                    if (rand < 0.6) {
+                        numCacti = 1; // 60% 확률로 1개
+                    } else if (rand < 0.85) {
+                        numCacti = 2; // 25% 확률로 2개
+                    } else {
+                        numCacti = 3; // 15% 확률로 3개
+                    }
+
+                    let currentOffset = 0;
+
+                    for (let i = 0; i < numCacti; i++) {
+                        const obstacle = document.createElement('div');
+                        obstacle.classList.add('obstacle', 'cactus');
+                        
+                        // 선인장마다 너비와 높이를 무작위로 설정하여 다양한 모양 생성
+                        let obsWidth = 15 + Math.random() * 15; // 15px to 30px
+                        let obsHeight = 30 + Math.random() * 30; // 30px to 60px
+                        let obsBottom = GROUND_LEVEL;
+                        
+                        // 선인장 모양 SVG 적용
+                        obstacle.innerHTML = getCactusSvg(obsWidth, obsHeight);
+
+                        obstacle.style.width = `${obsWidth}px`;
+                        obstacle.style.height = `${obsHeight}px`;
+                        obstacle.style.bottom = `${obsBottom}px`;
+
+                        // X 위치 설정: 그룹의 첫 번째는 GAME_WIDTH에서 시작, 나머지는 간격만큼 오프셋
+                        const initialX = GAME_WIDTH + currentOffset;
+
+                        // 장애물 데이터 저장
+                        obstacle.dataset.x = initialX; // 각 선인장은 독립적인 시작 X 위치를 가집니다.
+                        obstacle.dataset.y = obsBottom;
+                        obstacle.dataset.width = obsWidth;
+                        obstacle.dataset.height = obsHeight;
+                        
+                        gameContainer.appendChild(obstacle);
+                        
+                        // 다음 선인장 위치 계산: (현재 선인장 너비 + 고정 간격)
+                        currentOffset += obsWidth + CACTUS_SPACING;
+                    }
+
+                } else {
+                    // 새 생성 로직 (기존과 동일)
+                    const obstacle = document.createElement('div');
+                    obstacle.classList.add('obstacle', 'bird');
+                    
+                    let obsWidth = 30;
+                    let obsHeight = 20;
+                    // 앉아서는 피할 수 있지만, 서서 달릴 때는 반드시 부딪히는 높이 (25px ~ 35px)
+                    obsBottom = 25 + Math.random() * 10; 
+                    
+                    obstacle.innerHTML = getBirdSvg(obsWidth, obsHeight);
+
+                    obstacle.style.width = `${obsWidth}px`;
+                    obstacle.style.height = `${obsHeight}px`;
+                    obstacle.style.bottom = `${obsBottom}px`;
+
+                    // 장애물 데이터 저장
+                    obstacle.dataset.x = GAME_WIDTH;
+                    obstacle.dataset.y = obsBottom;
+                    obstacle.dataset.width = obsWidth;
+                    obstacle.dataset.height = obsHeight;
+                    
+                    gameContainer.appendChild(obstacle);
+                }
+                
+                lastObstacleTime = currentTime;
+            }
+        }
+
+        /**
+         * 장애물 이동 및 충돌 감지
+         */
+        function updateObstacles() {
+            const obstacles = document.querySelectorAll('.obstacle');
+
+            // 현재 공룡의 충돌 크기 설정
+            const currentDinoWidth = isDucking ? DUCK_DINO_WIDTH : NORMAL_DINO_WIDTH;
+            const currentDinoHeight = isDucking ? DUCK_DINO_HEIGHT : NORMAL_DINO_HEIGHT;
+
+            // 공룡의 충돌 박스 (지면으로부터의 높이)
+            const dinoTop = dinoY;
+            const dinoLeft = 50;
+            const dinoRight = dinoLeft + currentDinoWidth;
+
+            obstacles.forEach(obstacle => {
+                let obsX = parseFloat(obstacle.dataset.x);
+                
+                // **[핵심]** 장애물 이동: gameSpeed 변수를 사용하여 속도 적용
+                obsX -= gameSpeed;
+                obstacle.dataset.x = obsX;
+                
+                // 화면 크기 변화에 대응하여 left로 위치 설정
+                const containerWidth = gameContainer.clientWidth;
+                obstacle.style.left = `${obsX - (GAME_WIDTH - containerWidth)}px`;
+
+                // 화면 밖으로 나가면 제거
+                if (obsX + parseFloat(obstacle.dataset.width) < 0) {
+                    obstacle.remove();
+                    score += 10; // 점수를 10점씩 증가
+                    scoreDisplay.textContent = `점수: ${score}`;
+                }
+
+                // 충돌 감지 (AABB 방식)
+                const obsTop = parseFloat(obstacle.dataset.y);
+                const obsHeight = parseFloat(obstacle.dataset.height);
+                const obsWidth = parseFloat(obstacle.dataset.width);
+
+                const obsBottom = obsTop + obsHeight;
+                const obsLeft = obsX;
+                const obsRight = obsX + obsWidth;
+
+                // X축 충돌 조건
+                const xOverlap = dinoRight > obsLeft && dinoLeft < obsRight;
+                // Y축 충돌 조건
+                const yOverlap = dinoY < obsBottom && dinoY + currentDinoHeight > obsTop;
+
+                // 충돌 발생
+                if (xOverlap && yOverlap) {
+                    isGameOver = true;
+                }
+            });
+            
+            // **게임 속도 증가 로직**
+            // 1. 100점당 0.5씩 증가하는 기본 속도 계산
+            let calculatedSpeed = INITIAL_GAME_SPEED + Math.floor(score / 100) * 0.5;
+
+            if (score > 500) {
+                // 2. 점수가 500을 넘으면 최소 속도는 초기 속도(5)의 2배인 10으로 설정합니다.
+                gameSpeed = Math.max(calculatedSpeed, INITIAL_GAME_SPEED * 2);
+            } else {
+                gameSpeed = calculatedSpeed;
+            }
+        }
+
+
+        /**
+         * 메인 게임 루프
+         */
+        function gameLoop(currentTime) {
+            if (isGameOver) {
+                // 게임 오버 메시지 표시
+                gameMessage.innerHTML = `GAME OVER<br>점수: ${score}<br>다시 시작하려면 클릭하세요`;
+                gameMessage.style.display = 'block';
+                return;
+            }
+            
+            // 공룡 달리기 애니메이션 처리
+            if (!isJumping && !isDucking) {
+                frameCounter++;
+                if (frameCounter % RUNNING_ANIMATION_SPEED === 0) {
+                    runFrame = 1 - runFrame; // 0과 1을 토글
+                    dino.innerHTML = runFrame === 0 
+                        ? getDinoRunFrame1(NORMAL_DINO_WIDTH, NORMAL_DINO_HEIGHT)
+                        : getDinoRunFrame2(NORMAL_DINO_WIDTH, NORMAL_DINO_HEIGHT);
+                }
+            }
+            // 점프 또는 앉아있을 때는 정지 자세를 유지 (updateDino와 handleJumpOrDuck에서 처리)
+
+            updateDino();
+            createObstacle(currentTime);
+            updateObstacles();
+
+            animationFrameId = requestAnimationFrame(gameLoop);
+        }
+
+        // 윈도우 로드 완료 후 초기화
+        window.onload = initGame;
+
+        // 공룡 크기를 조정할 때 충돌 박스도 업데이트되도록 이벤트 리스너를 한 곳에서 처리
+        document.addEventListener('keydown', handleJumpOrDuck);
+        document.addEventListener('keyup', handleJumpOrDuck);
+        document.addEventListener('click', handleJumpOrDuck);
+
+    </script>
+</body>
+</html>
