@@ -106,7 +106,7 @@
         const DUCK_DINO_HEIGHT = 20; // 앉을 때 더 낮게
         const INITIAL_GAME_SPEED = 5; // 초기 게임 속도 상수
         
-        // **[수정]** 선인장 그룹 생성 시 간격: 10에서 5로 줄여 조밀하게 조정
+        // 선인장 그룹 생성 시 간격
         const CACTUS_SPACING = 5; 
 
         // 게임 상태
@@ -480,15 +480,10 @@
             });
             
             // **게임 속도 증가 로직**
-            // 1. 100점당 0.5씩 증가하는 기본 속도 계산
-            let calculatedSpeed = INITIAL_GAME_SPEED + Math.floor(score / 100) * 0.5;
-
-            if (score > 500) {
-                // 2. 점수가 500을 넘으면 최소 속도는 초기 속도(5)의 2배인 10으로 설정합니다.
-                gameSpeed = Math.max(calculatedSpeed, INITIAL_GAME_SPEED * 2);
-            } else {
-                gameSpeed = calculatedSpeed;
-            }
+            // 1. 100점당 1.0씩 증가하는 기본 속도 계산
+            // 예: 점수 0-99: 5.0, 100-199: 6.0, 200-299: 7.0, 500-599: 10.0
+            let calculatedSpeed = INITIAL_GAME_SPEED + Math.floor(score / 100) * 1.0; 
+            gameSpeed = calculatedSpeed;
         }
 
 
